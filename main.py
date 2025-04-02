@@ -25,12 +25,16 @@ ELEVEN_LABS_AGENT_ID = os.getenv("AGENT_ID")
 INTERCOM_API_KEY = os.getenv("INTERCOM_API_KEY")
 eleven_labs_client = ElevenLabs(api_key=ELEVEN_LABS_API_KEY)
 secret = "secret"
+admin_id = 123
+smrtlite_id = 567
 
 intercom_url = "https://api.intercom.io/conversations"
+
 
 @app.get("/")
 async def root():
     return {"message": "Twilio-ElevenLabs Integration Server"}
+
 
 @app.post("/twilio/inbound_call")
 async def handle_incoming_call(request: Request):
@@ -58,7 +62,7 @@ async def handle_media_stream(websocket: WebSocket):
         conversation = Conversation(
             client=eleven_labs_client,
             agent_id=ELEVEN_LABS_AGENT_ID,
-            requires_auth=True, # Security > Enable authentication
+            requires_auth=True,  # Security > Enable authentication
             audio_interface=audio_interface,
             callback_agent_response=lambda text: print(f"Agent: {text}"),
             callback_user_transcript=lambda text: print(f"User: {text}"),
@@ -85,8 +89,9 @@ async def handle_media_stream(websocket: WebSocket):
         except Exception:
             print("Error ending conversation session:")
             traceback.print_exc()
-            
-@app.post("/webhook")
+
+
+@app.post("/post-webhook")
 async def receive_message(request: Request):
     payload = await request.body()
     print(f"Post-Data: {payload}")
@@ -106,46 +111,70 @@ async def receive_message(request: Request):
         msg=full_payload_to_sign.encode("utf-8"),
         digestmod=sha256,
     )
-    digest = 'v0=' + mac.hexdigest()
+    digest = "v0=" + mac.hexdigest()
     if hmac_signature != digest:
         return
     # Continue processing
     print("Signature verification succeeded")
+
+    phone_number = payload["data"]["metadata"]["phone_call"]["external_number"]
+    transcript = payload["data"]["analysis"]["transcript_summary"]
+    should_support = payload["data"]["analysis"]["evalutation_criteria_results"]["should_support"]
     
-    # transcript = payload
-    # create_intercom_conversation(transcript)
+    contact_id = create_intercom_contact(phone_number)
+    conversation_id = create_intercom_conversation(transcript, contact_id)
     
+    assign_conversation(conversation_id, admin_id, smrtlite_id)
+    
+    if(not should_support):
+        close_conversation(conversation_id, admin_id)
+
     return {"status": "received"}
+
 
 def create_intercom_contact(phone_number):
     import requests
 
     url = "https://api.intercom.io/contacts"
 
-    payload = {
-    "external_id": phone_number,
-    "phone": phone_number
-    }
+    payload = {"external_id": phone_number, "phone": phone_number}
 
     headers = {
-    "Content-Type": "application/json",
-    "Intercom-Version": "2.13",
-    "Authorization": f"Bearer {INTERCOM_API_KEY}"
+        "Content-Type": "application/json",
+        "Intercom-Version": "2.13",
+        "Authorization": f"Bearer {INTERCOM_API_KEY}",
     }
 
     response = requests.post(url, json=payload, headers=headers)
 
     data = response.json()
     print(data)
+    return data["id"]
+
 
 def create_intercom_conversation(transcript, user_id):
     url = "https://api.intercom.io/conversations"
+    payload = {"from": {"type": "user", "id": user_id}, "body": transcript}
+
+    headers = {
+        "Content-Type": "application/json",
+        "Intercom-Version": "2.13",
+        "Authorization": f"Bearer {INTERCOM_API_KEY}",
+    }
+
+    response = requests.post(url, json=payload, headers=headers)
+
+    data = response.json()
+    print(data)
+    return data["id"]
+    
+def close_conversation(conversation_id, admin_id):
+    url = "https://api.intercom.io/conversations/" + conversation_id + "/parts"
+
     payload = {
-    "from": {
-        "type": "user",
-        "id": user_id
-    },
-    "body": transcript
+    "message_type": "close",
+    "type": "admin",
+    "admin_id": admin_id
     }
 
     headers = {
@@ -159,7 +188,29 @@ def create_intercom_conversation(transcript, user_id):
     data = response.json()
     print(data)
     
+def assign_conversation(conversation_id, admin_id, assignee_id):
+    url = "https://api.intercom.io/conversations/" + conversation_id + "/parts"
+
+    payload = {
+    "message_type": "assignment",
+    "type": "admin",
+    "admin_id": admin_id,
+    "assignee_id": assignee_id
+    }
+
+    headers = {
+    "Content-Type": "application/json",
+    "Intercom-Version": "2.13",
+    "Authorization": f"Bearer {INTERCOM_API_KEY}"
+    }
+
+    response = requests.post(url, json=payload, headers=headers)
+
+    data = response.json()
+    print(data)
+
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
