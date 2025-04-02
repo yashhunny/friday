@@ -8,6 +8,10 @@ from twilio.twiml.voice_response import VoiceResponse, Connect
 from elevenlabs import ElevenLabs
 from twilio_audio_interface import TwilioAudioInterface
 from elevenlabs.conversational_ai.conversation import Conversation
+import time
+import hmac
+from hashlib import sha256
+import requests
 
 # Load environment variables
 load_dotenv()
@@ -18,7 +22,11 @@ app = FastAPI()
 # Initialize ElevenLabs client
 ELEVEN_LABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 ELEVEN_LABS_AGENT_ID = os.getenv("AGENT_ID")
+INTERCOM_API_KEY = os.getenv("INTERCOM_API_KEY")
 eleven_labs_client = ElevenLabs(api_key=ELEVEN_LABS_API_KEY)
+secret = "secret"
+
+intercom_url = "https://api.intercom.io/conversations"
 
 @app.get("/")
 async def root():
@@ -77,6 +85,80 @@ async def handle_media_stream(websocket: WebSocket):
         except Exception:
             print("Error ending conversation session:")
             traceback.print_exc()
+            
+@app.post("/webhook")
+async def receive_message(request: Request):
+    payload = await request.body()
+    print(f"Post-Data: {payload}")
+    headers = request.headers.get("elevenlabs-signature")
+    if headers is None:
+        return
+    timestamp = headers.split(",")[0][2:]
+    hmac_signature = headers.split(",")[1]
+    # Validate timestamp
+    tolerance = int(time.time()) - 30 * 60
+    if int(timestamp) < tolerance:
+        return
+    # Validate signature
+    full_payload_to_sign = f"{timestamp}.{payload.decode('utf-8')}"
+    mac = hmac.new(
+        key=secret.encode("utf-8"),
+        msg=full_payload_to_sign.encode("utf-8"),
+        digestmod=sha256,
+    )
+    digest = 'v0=' + mac.hexdigest()
+    if hmac_signature != digest:
+        return
+    # Continue processing
+    print("Signature verification succeeded")
+    
+    # transcript = payload
+    # create_intercom_conversation(transcript)
+    
+    return {"status": "received"}
+
+def create_intercom_contact(phone_number):
+    import requests
+
+    url = "https://api.intercom.io/contacts"
+
+    payload = {
+    "external_id": phone_number,
+    "phone": phone_number
+    }
+
+    headers = {
+    "Content-Type": "application/json",
+    "Intercom-Version": "2.13",
+    "Authorization": f"Bearer {INTERCOM_API_KEY}"
+    }
+
+    response = requests.post(url, json=payload, headers=headers)
+
+    data = response.json()
+    print(data)
+
+def create_intercom_conversation(transcript, user_id):
+    url = "https://api.intercom.io/conversations"
+    payload = {
+    "from": {
+        "type": "user",
+        "id": user_id
+    },
+    "body": transcript
+    }
+
+    headers = {
+    "Content-Type": "application/json",
+    "Intercom-Version": "2.13",
+    "Authorization": f"Bearer {INTERCOM_API_KEY}"
+    }
+
+    response = requests.post(url, json=payload, headers=headers)
+
+    data = response.json()
+    print(data)
+    
 
 if __name__ == "__main__":
     import uvicorn
